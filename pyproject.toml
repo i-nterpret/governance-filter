@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "governance-filter"
+version = "0.1.0"
+description = "A three-substrate architecture for hallucination elimination via routing and interference filtering"
+authors = [{name = "James E. Dunn"}]
+license = {text = "Apache-2.0"}
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+keywords = ["hallucination", "superposition", "interpretability", "governance", "routing", "llm-safety"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/i-nterpret/governance-filter"
+Paper = "https://i-nterpret.com"
+Sponsor = "https://github.com/sponsors/i-nterpret"
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov", "ruff"]
+notebooks = ["jupyter", "matplotlib"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
