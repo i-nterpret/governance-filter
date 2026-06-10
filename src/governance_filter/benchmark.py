@@ -1,148 +1,101 @@
 """
-Benchmark — Elhage et al. (2022) toy-model reproduction harness.
+Benchmark — Elhage et al. (2022) toy-model reproduction harness.  (v2, 2026-06)
 
-Trains a linear autoencoder on sparse features, applies the GovernanceFilter
-post-hoc, and measures false-activation elimination across sparsity regimes.
-
-Target: 100% false-activation elimination across sparsity in {0.05, 0.10, 0.30}
-with reconstruction-error increase in [4%, 31%].
+v2 CHANGES
+  1. TRAINER FIX: the published train_toy_autoencoder transposed the encode/decode
+     (X @ W.T where the dims need X @ W) and dropped an @W in the gradient, so it
+     did not run. Corrected to a tied-weight linear autoencoder:
+         encode  h     = X @ W           (n_samples, n_dim)
+         decode  X_hat = ReLU(h @ W.T)   (n_samples, n_features)
+         dL/dW   = X.T @ G @ W + G.T @ X @ W,   G = -2(R*M)/n
+  2. SURFACES THE SECOND NUMBER: reports true-positive RETENTION beside elimination.
+     The published headline reported only elimination ("100%"); the retention cost
+     (missed_activations) was computed but never shown. Both are reported now.
+  3. COMPARES suppress() vs project() so the cost and its fix are visible side by side.
 """
 from __future__ import annotations
-
-from dataclasses import dataclass
 
 import numpy as np
 
 from governance_filter.filter import GovernanceFilter
 
 
-@dataclass
-class BenchmarkResult:
-    sparsity: float
-    false_activations_ungoverned: float
-    false_activations_governed: float
-    reconstruction_error_ungoverned: float
-    reconstruction_error_governed: float
-    missed_activations_ungoverned: float
-    missed_activations_governed: float
-    eliminated_pct: float
-    error_increase_pct: float
-
-
-def generate_sparse_features(
-    n_features: int,
-    n_samples: int,
-    sparsity: float,
-    importance_decay: float = 0.7,
-    rng: np.random.Generator | None = None,
-) -> np.ndarray:
-    """Generate sparse feature activations with exponentially decaying importances.
-
-    Each feature k is active with probability sparsity, with magnitude scaled
-    by importance_decay ** k.
-    """
+def generate_sparse_features(n_features, n_samples, sparsity, importance_decay=0.7, rng=None):
     if rng is None:
         rng = np.random.default_rng(42)
-
     importances = importance_decay ** np.arange(n_features)
     active = rng.random((n_samples, n_features)) < sparsity
     magnitudes = rng.random((n_samples, n_features))
     return active * magnitudes * importances[None, :]
 
 
-def train_toy_autoencoder(
-    X: np.ndarray,
-    n_dim: int,
-    n_steps: int = 5000,
-    lr: float = 0.01,
-    rng: np.random.Generator | None = None,
-) -> np.ndarray:
-    """Train a linear autoencoder W (n_features x n_dim) on X.
-
-    Encoding: h = X @ W.T
-    Decoding: X_hat = ReLU(h @ W)
-
-    Minimizes ||X - X_hat||^2. Returns the trained W.
-    """
+def train_toy_autoencoder(X, n_dim, n_steps=3000, lr=0.05, rng=None):
+    """Tied-weight linear autoencoder.  h = X @ W ; X_hat = ReLU(h @ W.T)."""
     if rng is None:
         rng = np.random.default_rng(0)
-    n_features = X.shape[1]
-    W = rng.standard_normal((n_features, n_dim)) * 0.1
-
+    nf, n = X.shape[1], X.shape[0]
+    W = rng.standard_normal((nf, n_dim)) * 0.1
     for _ in range(n_steps):
-        h = X @ W.T
-        X_hat = np.maximum(h @ W, 0)
-        residual = X - X_hat
-        active = (X_hat > 0).astype(float)
-        grad = -2 * (residual * active).T @ h - 2 * X.T @ (residual * active)
-        W -= lr * grad / X.shape[0]
-
+        h = X @ W
+        Z = h @ W.T
+        X_hat = np.maximum(Z, 0.0)
+        R = X - X_hat
+        M = (Z > 0).astype(float)
+        G = -2.0 * (R * M) / n
+        gradW = X.T @ G @ W + G.T @ X @ W
+        W -= lr * gradW
     return W
 
 
-def run_benchmark(
-    sparsity: float,
-    n_features: int = 20,
-    n_dim: int = 5,
-    n_samples: int = 2000,
-    threshold: float = 0.3,
-    activation_threshold: float = 0.05,
-    seed: int = 42,
-) -> BenchmarkResult:
-    """Run a single benchmark at the specified sparsity level.
+def _metrics(Xg, X, X_hat, act):
+    truly = X > act
+    appears = Xg > act
+    appears_un = X_hat > act
+    false_un = float(np.mean(appears_un & ~truly))
+    false = float(np.mean(appears & ~truly))
+    elim = 100.0 * (1.0 - false / max(false_un, 1e-12))
+    tp = int(np.sum(appears & truly))
+    fn = int(np.sum(~appears & truly))
+    retention = 100.0 * tp / max(tp + fn, 1)
+    err = float(np.mean((X - Xg) ** 2))
+    return false * 100, elim, retention, err
 
-    Returns hallucination/precision metrics ungoverned vs governed.
-    """
+
+def run_benchmark(sparsity, n_features=20, n_dim=5, n_samples=4000,
+                  threshold=0.3, activation_threshold=0.05, seed=42):
     rng = np.random.default_rng(seed)
     X = generate_sparse_features(n_features, n_samples, sparsity, rng=rng)
     W = train_toy_autoencoder(X, n_dim, rng=rng)
     filt = GovernanceFilter(W, threshold=threshold)
-
-    h = X @ W.T
-    X_hat = np.maximum(h @ W, 0)
-
-    X_governed = np.zeros_like(X_hat)
-    for i in range(X.shape[0]):
-        X_governed[i] = filt.filter(X[i], X_hat[i])
-
-    truly_active = X > activation_threshold
-    appears_active_un = X_hat > activation_threshold
-    appears_active_gov = X_governed > activation_threshold
-
-    false_un = np.mean(appears_active_un & ~truly_active)
-    false_gov = np.mean(appears_active_gov & ~truly_active)
-    missed_un = np.mean(~appears_active_un & truly_active)
-    missed_gov = np.mean(~appears_active_gov & truly_active)
-
-    err_un = float(np.mean((X - X_hat) ** 2))
-    err_gov = float(np.mean((X - X_governed) ** 2))
-
-    return BenchmarkResult(
-        sparsity=sparsity,
-        false_activations_ungoverned=float(false_un),
-        false_activations_governed=float(false_gov),
-        reconstruction_error_ungoverned=err_un,
-        reconstruction_error_governed=err_gov,
-        missed_activations_ungoverned=float(missed_un),
-        missed_activations_governed=float(missed_gov),
-        eliminated_pct=100.0 * (1.0 - false_gov / max(false_un, 1e-12)),
-        error_increase_pct=100.0 * (err_gov - err_un) / max(err_un, 1e-12),
-    )
-
-
-def run_full_benchmark(
-    sparsities: tuple[float, ...] = (0.05, 0.10, 0.30),
-    **kwargs,
-) -> list[BenchmarkResult]:
-    """Run the full benchmark across the standard sparsity regimes."""
-    return [run_benchmark(sparsity=s, **kwargs) for s in sparsities]
+    h = X @ W
+    X_hat = np.maximum(h @ W.T, 0.0)
+    Xs = np.array([filt.filter(X[i], X_hat[i]) for i in range(n_samples)])
+    Xp = np.array([filt.project(X[i], X_hat[i]) for i in range(n_samples)])
+    return {
+        "sparsity": sparsity,
+        "ungoverned": _metrics(X_hat, X, X_hat, activation_threshold),
+        "suppress": _metrics(Xs, X, X_hat, activation_threshold),
+        "project": _metrics(Xp, X, X_hat, activation_threshold),
+        "train_err": float(np.mean((X - X_hat) ** 2)),
+    }
 
 
 if __name__ == "__main__":
-    print(f"{'Sparsity':>10} {'False (un)':>12} {'False (gov)':>13} "
-          f"{'Eliminated':>12} {'Δ Error %':>12}")
-    print("-" * 65)
-    for r in run_full_benchmark():
-        print(f"{r.sparsity:>10.2f} {r.false_activations_ungoverned:>12.4f} "
-              f"{r.false_activations_governed:>13.4f} {r.eliminated_pct:>11.1f}% "
-              f"{r.error_increase_pct:>+11.1f}%")
+    rows = [run_benchmark(s) for s in (0.05, 0.10, 0.30)]
+    hdr = f"{'spars':>6} {'method':>11} {'false%':>8} {'elim%':>7} {'TP-retain%':>11} {'recon-err':>10}"
+    print(hdr); print("-" * len(hdr))
+    elim_p, ret_p, elim_s, ret_s = [], [], [], []
+    for r in rows:
+        fu = r["ungoverned"]
+        print(f"{r['sparsity']:>6.2f} {'ungoverned':>11} {fu[0]:>8.3f} {'—':>7} {fu[2]:>11.1f} {fu[3]:>10.5f}")
+        for name in ("suppress", "project"):
+            f, e, ret, err = r[name]
+            print(f"{'':>6} {name:>11} {f:>8.3f} {e:>7.1f} {ret:>11.1f} {err:>10.5f}")
+            if name == "project":
+                elim_p.append(e); ret_p.append(ret)
+            else:
+                elim_s.append(e); ret_s.append(ret)
+        print()
+    print("=" * 56)
+    print(f"SUPPRESS (published): elim {np.mean(elim_s):.1f}%  TP-retention {np.mean(ret_s):.1f}%")
+    print(f"PROJECT  (v2)       : elim {np.mean(elim_p):.1f}%  TP-retention {np.mean(ret_p):.1f}%")

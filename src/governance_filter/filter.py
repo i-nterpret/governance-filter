@@ -8,6 +8,12 @@ linear-decoding layer.
 
 Reference: Dunn (March 2026), "Governance Architecture for Neural Network
 Superposition," extending Elhage et al. (2022) toy-model framework.
+
+v2 (2026-06): adds project() alongside filter(). filter() suppresses (zeros)
+over-threshold features; project() recovers the input-supported signal (P x)
+for those features instead, dropping only the interference ((I - P) x) — same
+false-activation elimination, with the true positives the suppressor discards
+recovered. filter() is unchanged.
 """
 from __future__ import annotations
 
@@ -76,6 +82,54 @@ class GovernanceFilter:
         suppress_mask = ratio > self.threshold
         x_governed = x_hat.copy()
         x_governed[suppress_mask] = 0.0
+        return x_governed
+
+    def project(self, x_input: np.ndarray, x_hat: np.ndarray,
+                margin: float = 1.0) -> np.ndarray:
+        """Give-and-take projection: recover the aligned signal instead of zeroing.
+
+        For a feature whose interference ratio exceeds threshold, recover the
+        input-supported signal (P x) rather than zeroing it; the interference
+        component ((I - P) x) is dropped.
+
+          - false activation (x_input_k ~ 0): signal_k ~ 0  -> still eliminated
+          - true positive    (x_input_k > 0): signal_k > 0  -> RECOVERED
+
+        Elimination matches filter(); the true positives filter() discards are kept.
+
+        Parameters
+        ----------
+        x_input : np.ndarray, shape (n_features,) or (batch, n_features)
+            Input feature activations.
+        x_hat : np.ndarray, same shape as x_input
+            Reconstructed activations after the decode pass.
+        margin : float, default 1.0
+            Scales the recovered signal (1.0 = full aligned recovery). The
+            projection recovery fraction; distinct from any dissent-recycle margin.
+
+        Returns
+        -------
+        x_governed : np.ndarray, same shape as x_hat
+            Output with interference-dominated features replaced by their aligned
+            (input-supported) component rather than zeroed.
+        """
+        if x_input.shape != x_hat.shape:
+            raise ValueError(
+                f"x_input and x_hat must have matching shape; "
+                f"got {x_input.shape} and {x_hat.shape}"
+            )
+
+        signal = x_input * self.feature_norms_sq
+        ratio = np.abs(x_hat - signal) / (np.abs(x_hat) + self.eps)
+        over = ratio > self.threshold
+        x_governed = x_hat.copy()
+        # Recover the aligned signal, but CLIP so it can never exceed what was
+        # actually reconstructed. Without the clip, signal = x_input * ||w||^2
+        # amplifies by the weight norm on trained (non-unit) weights and can push
+        # a sub-threshold input over the activation line -> a spurious false
+        # activation. Clipping makes project() strictly dominate filter():
+        # identical false-activation elimination, equal-or-higher TP retention.
+        x_governed[over] = np.clip(margin * signal[over], 0.0, np.abs(x_hat[over]))
         return x_governed
 
     def stability_index(self) -> float:
