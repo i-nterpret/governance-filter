@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "governance-filter"
+version = "0.3.0"
+description = "An interference gate for neural-network superposition: a selective-prediction filter with a dissent route, studied on a risk-coverage curve"
+authors = [{name = "James E. Dunn"}]
+license = {text = "Apache-2.0"}
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+keywords = ["superposition", "mechanistic-interpretability", "selective-prediction", "risk-coverage", "abstention", "reject-option"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/i-nterpret/governance-filter"
+Paper = "https://doi.org/10.5281/zenodo.20292282"
+Sponsor = "https://github.com/sponsors/i-nterpret"
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov", "ruff", "matplotlib"]
+notebooks = ["jupyter", "matplotlib"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
